@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>🚀 Space Shooter</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+      overflow: hidden;
+    }
+    #ui {
+      display: flex;
+      gap: 40px;
+      margin-bottom: 12px;
+      font-size: 18px;
+      letter-spacing: 2px;
+    }
+    #ui span { color: #7df; }
+    canvas {
+      border: 1px solid #2a4a6a;
+      box-shadow: 0 0 40px rgba(50, 150, 255, 0.3);
+    }
+    #msg {
+      position: absolute;
+      text-align: center;
+      font-size: 28px;
+      font-weight: bold;
+      color: #fff;
+      text-shadow: 0 0 20px #4af;
+      pointer-events: none;
+    }
+    #sub {
+      font-size: 14px;
+      color: #adf;
+      margin-top: 8px;
+      letter-spacing: 1px;
+    }
+    #controls {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #456;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div>SCORE <span id="score">0</span></div>
+    <div>LEVEL <span id="level">1</span></div>
+    <div>LIVES <span id="lives">❤️❤️❤️</span></div>
+  </div>
+  <canvas id="c" width="480" height="640"></canvas>
+  <div id="msg">
+    SPACE SHOOTER
+    <div id="sub">PRESS SPACE OR CLICK TO START</div>
+  </div>
+  <div id="controls">← → 이동 &nbsp;|&nbsp; SPACE 발사 &nbsp;|&nbsp; 마우스로도 가능</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let state = 'idle'; // idle | playing | dead | win
+let score = 0, lives = 3, level = 1;
+let keys = {};
+let stars = [], bullets = [], enemies = [], particles = [], powerups = [];
+let player, enemyBullets = [];
+let shootCooldown = 0, enemyShootTimer = 0;
+let wave = 0, waveClear = false;
+
+// --- Stars ---
+function initStars() {
+  stars = Array.from({length: 120}, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.5 + 0.3,
+    speed: Math.random() * 1.5 + 0.3,
+    bright: Math.random()
+  }));
+}
+
+// --- Player ---
+function initPlayer() {
+  player = { x: W/2, y: H - 70, w: 36, h: 36, speed: 5, invincible: 0 };
+}
+
+// --- Enemies ---
+function spawnWave() {
+  wave++;
+  const cols = 8, rows = Math.min(2 + wave, 5);
+  const ex = 50, ey = 60, gx = (W - 100) / (cols - 1), gy = 48;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const type = r === 0 ? 'boss' : r < 2 ? 'fast' : 'basic';
+      enemies.push({
+        x: ex + c * gx, y: ey + r * gy,
+        w: 28, h: 28,
+        hp: type === 'boss' ? 3 : 1,
+        maxHp: type === 'boss' ? 3 : 1,
+        type,
+        dx: (1 + wave * 0.15) * (Math.random() < 0.5 ? 1 : -1),
+        dy: 0,
+        dropTimer: Math.random() * 200
+      });
+    }
+  }
+}
+
+// --- Particles ---
+function explode(x, y, color = '#f80', count = 18) {
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    const speed = Math.random() * 4 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: Math.random() * 0.04 + 0.02,
+      r: Math.random() * 3 + 1,
+      color
+    });
+  }
+}
+
+// --- Init ---
+function startGame() {
+  score = 0; lives = 3; level = 1; wave = 0;
+  bullets = []; enemies = []; particles = []; enemyBullets = []; powerups = []; waveClear = false;
+  initPlayer();
+  spawnWave();
+  state = 'playing';
+  document.getElementById('msg').style.display = 'none';
+  updateUI();
+}
+
+function updateUI() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('level').textContent = level;
+  document.getElementById('lives').textContent = '❤️'.repeat(lives);
+}
+
+// --- Draw helpers ---
+function drawShip(x, y, w, h, color, invincible) {
+  if (invincible && Math.floor(Date.now() / 80) % 2 === 0) return;
+  ctx.save();
+  ctx.translate(x, y);
+  // Body
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, -h/2);
+  ctx.lineTo(w/2, h/2);
+  ctx.lineTo(w/4, h/3);
+  ctx.lineTo(-w/4, h/3);
+  ctx.lineTo(-w/2, h/2);
+  ctx.closePath();
+  ctx.fill();
+  // Engine glow
+  ctx.fillStyle = `hsl(${Date.now()/5 % 360}, 100%, 70%)`;
+  ctx.beginPath();
+  ctx.ellipse(0, h/3, 5, 6 + Math.random()*4, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  const colors = { basic: '#f44', fast: '#f84', boss: '#c4f' };
+  ctx.fillStyle = colors[e.type] || '#f44';
+  if (e.type === 'boss') {
+    ctx.beginPath();
+    ctx.moveTo(0, -e.h/2);
+    ctx.lineTo(e.w/2, 0);
+    ctx.lineTo(e.w/3, e.h/2);
+    ctx.lineTo(-e.w/3, e.h/2);
+    ctx.lineTo(-e.w/2, 0);
+    ctx.closePath();
+    ctx.fill();
+    // HP bar
+    const bw = 32;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-bw/2, e.h/2 + 4, bw, 4);
+    ctx.fillStyle = '#c4f';
+    ctx.fillRect(-bw/2, e.h/2 + 4, bw * (e.hp / e.maxHp), 4);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(0, e.h/2);
+    ctx.lineTo(e.w/2, -e.h/4);
+    ctx.lineTo(e.w/3, -e.h/2);
+    ctx.lineTo(-e.w/3, -e.h/2);
+    ctx.lineTo(-e.w/2, -e.h/4);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// --- Mouse control ---
+let mouseX = W/2;
+let mouseMoved = false;
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = e.clientX - rect.left;
+  mouseMoved = true;
+});
+document.addEventListener('keydown', () => { mouseMoved = false; });
+canvas.addEventListener('click', () => {
+  if (state !== 'playing') startGame();
+  else fireBullet();
+});
+
+// --- Update ---
+function update() {
+  // Stars
+  stars.forEach(s => { s.y += s.speed; if (s.y > H) s.y = 0; });
+
+  if (state === 'paused') return;
+  if (state !== 'playing') return;
+
+  // Player movement
+  if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
+  if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
+  // Mouse follow (마우스를 실제로 움직인 경우에만)
+  if (mouseMoved && Math.abs(mouseX - player.x) > 4) player.x += (mouseX - player.x) * 0.12;
+  player.x = Math.max(player.w/2, Math.min(W - player.w/2, player.x));
+  if (player.invincible > 0) player.invincible--;
+
+  // Shoot
+  if (shootCooldown > 0) shootCooldown--;
+  if ((keys[' '] || keys['z']) && shootCooldown === 0) fireBullet();
+
+  // Bullets
+  bullets = bullets.filter(b => {
+    b.y -= 12;
+    return b.y > -10;
+  });
+
+  // Enemy bullets
+  enemyBullets = enemyBullets.filter(b => {
+    b.y += b.speed;
+    return b.y < H + 10;
+  });
+
+  // Enemy movement
+  let hitWall = false;
+  enemies.forEach(e => {
+    e.x += e.dx;
+    if (e.x > W - 30 || e.x < 30) hitWall = true;
+  });
+  if (hitWall) {
+    enemies.forEach(e => { e.dx *= -1; e.y += 15; });
+  }
+
+  // Enemy shoot
+  enemyShootTimer--;
+  if (enemyShootTimer <= 0 && enemies.length > 0) {
+    enemyShootTimer = Math.max(30, 80 - wave * 5);
+    const shooter = enemies[Math.floor(Math.random() * enemies.length)];
+    enemyBullets.push({
+      x: shooter.x, y: shooter.y + 16,
+      speed: 3 + wave * 0.3,
+      type: shooter.type
+    });
+  }
+
+  // Powerups
+  powerups = powerups.filter(p => {
+    p.y += 1.5;
+    if (Math.abs(p.x - player.x) < 20 && Math.abs(p.y - player.y) < 20) {
+      if (p.type === 'life') { lives = Math.min(5, lives + 1); updateUI(); }
+      if (p.type === 'score') { score += 200; updateUI(); }
+      explode(p.x, p.y, '#ff0', 10);
+      return false;
+    }
+    return p.y < H + 20;
+  });
+
+  // Collision: bullets vs enemies
+  bullets.forEach(b => {
+    if (b.hit) return;
+    enemies.forEach(e => {
+      if (Math.abs(b.x - e.x) < e.w/2 + 4 && Math.abs(b.y - e.y) < e.h/2 + 4) {
+        b.hit = true;
+        e.hp--;
+        explode(e.x, e.y, e.type === 'boss' ? '#c4f' : '#f84', 10);
+        if (e.hp <= 0) {
+          const pts = e.type === 'boss' ? 150 : e.type === 'fast' ? 80 : 50;
+          score += pts * level;
+          updateUI();
+          explode(e.x, e.y, '#ff0', 24);
+          e.dead = true;
+          // Chance to drop powerup
+          if (Math.random() < 0.08) {
+            powerups.push({ x: e.x, y: e.y, type: Math.random() < 0.5 ? 'life' : 'score' });
+          }
+        }
+      }
+    });
+  });
+  bullets = bullets.filter(b => !b.hit);
+  enemies = enemies.filter(e => !e.dead);
+
+  // Collision: enemy bullets vs player
+  if (player.invincible === 0) {
+    enemyBullets.forEach(b => {
+      if (b.hit) return;
+      if (Math.abs(b.x - player.x) < 18 && Math.abs(b.y - player.y) < 18) {
+        b.hit = true;
+        lives--;
+        updateUI();
+        explode(player.x, player.y, '#4af', 20);
+        player.invincible = 120;
+        if (lives <= 0) { state = 'dead'; showMsg('GAME OVER', `SCORE: ${score} — PRESS SPACE`); }
+      }
+    });
+    enemyBullets = enemyBullets.filter(b => !b.hit);
+  }
+
+  // Enemies reach bottom
+  enemies.forEach(e => {
+    if (e.y > H - 60 && player.invincible === 0) {
+      lives--;
+      updateUI();
+      player.invincible = 120;
+      e.dead = true;
+      if (lives <= 0) { state = 'dead'; showMsg('GAME OVER', `SCORE: ${score} — PRESS SPACE`); }
+    }
+  });
+  enemies = enemies.filter(e => !e.dead);
+
+  // Next wave
+  if (enemies.length === 0 && !waveClear) {
+    waveClear = true;
+    level++;
+    updateUI();
+    setTimeout(() => { if (state === 'playing') { spawnWave(); waveClear = false; } }, 1200);
+  }
+
+  // Particles
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.95; p.vy *= 0.95;
+    p.life -= p.decay;
+  });
+  particles = particles.filter(p => p.life > 0);
+}
+
+function fireBullet() {
+  if (shootCooldown > 0) return;
+  bullets.push({ x: player.x, y: player.y - 20 });
+  shootCooldown = 12;
+}
+
+function showMsg(title, sub) {
+  const el = document.getElementById('msg');
+  el.innerHTML = title + `<div id="sub">${sub}</div>`;
+  el.style.display = 'block';
+}
+
+// --- Draw ---
+function draw() {
+  ctx.fillStyle = '#07071a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  stars.forEach(s => {
+    const b = 0.4 + 0.6 * Math.abs(Math.sin(Date.now() / 800 + s.bright * 10));
+    ctx.fillStyle = `rgba(180,210,255,${b * 0.8})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  if (state === 'playing' || state === 'dead') {
+    // Player
+    drawShip(player.x, player.y, player.w, player.h, '#4af', player.invincible > 0);
+
+    // Bullets
+    bullets.forEach(b => {
+      ctx.fillStyle = '#ff0';
+      ctx.shadowColor = '#ff0';
+      ctx.shadowBlur = 8;
+      ctx.fillRect(b.x - 2, b.y - 8, 4, 14);
+      ctx.shadowBlur = 0;
+    });
+
+    // Enemy bullets
+    enemyBullets.forEach(b => {
+      const c = b.type === 'boss' ? '#f0f' : '#f44';
+      ctx.fillStyle = c;
+      ctx.shadowColor = c;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+
+    // Enemies
+    enemies.forEach(drawEnemy);
+
+    // Powerups
+    powerups.forEach(p => {
+      const c = p.type === 'life' ? '#f66' : '#ff0';
+      ctx.fillStyle = c;
+      ctx.shadowColor = c;
+      ctx.shadowBlur = 10;
+      ctx.font = '18px serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.type === 'life' ? '❤' : '★', p.x, p.y);
+      ctx.shadowBlur = 0;
+    });
+
+    // Particles
+    particles.forEach(p => {
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
+}
+
+// --- Loop ---
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// --- Input ---
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ') {
+    e.preventDefault();
+    if (state !== 'playing' && state !== 'paused') startGame();
+  }
+  if (e.key === 'Escape') {
+    if (state === 'playing') {
+      state = 'paused';
+      showMsg('PAUSED', 'ESC로 계속하기');
+    } else if (state === 'paused') {
+      state = 'playing';
+      document.getElementById('msg').style.display = 'none';
+    }
+  }
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+initStars();
+initPlayer();
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(open /Users/rich/study/hehe/game.html)"
+    ]
+  }
+}
